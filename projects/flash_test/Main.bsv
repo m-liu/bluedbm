@@ -54,12 +54,15 @@ interface FlashRequest;
 	method Action sendTest(Bit#(32) data);
 	method Action addWriteHostBuffer(Bit#(32) pointer, Bit#(32) offset, Bit#(32) idx);
 	method Action addReadHostBuffer(Bit#(32) pointer, Bit#(32) offset, Bit#(32) idx);
+
+	method Action start(Bit#(32) dummy);
 endinterface
 
 interface FlashIndication;
 	method Action readDone(Bit#(32) rbuf, Bit#(32) tag);
 	method Action writeDone(Bit#(32) tag);
 	method Action hexDump(Bit#(32) data);
+	method Action reqFlashCmd(Bit#(32) inq, Bit#(32) count);
 endinterface
 
 interface MainIfc;
@@ -80,10 +83,12 @@ module mkMain#(FlashIndication indication, Clock clk250, Reset rst250)(MainIfc);
 	Integer wordBytes = valueOf(WordBytes); 
 	Integer pageWords = pageBytes/wordBytes;
 
+	Reg#(Bool) started <- mkReg(False);
+
 	GtxClockImportIfc gtx_clk_fmc1 <- mkGtxClockImport;
 	AuroraIfc auroraIntra1 <- mkAuroraIntra(gtx_clk_fmc1.gtx_clk_p_ifc, gtx_clk_fmc1.gtx_clk_n_ifc, clk250);
 	CSDebugIfc csDebug <- mkChipscopeDebug();
-
+   
 	Reg#(Bit#(128)) latencyCnt <- mkReg(0);
 	rule latencyCount;
 		latencyCnt <= latencyCnt + 1;
@@ -107,9 +112,7 @@ module mkMain#(FlashIndication indication, Clock clk250, Reset rst250)(MainIfc);
 		curTestData <= curTestData + 1;
 	endrule
 	*/
-  
 	Reg#(Bit#(32)) auroraTestIdx <- mkReg(0);
-	
 	rule sendAuroraTest(auroraTestIdx > 0);
 		auroraIntra1.send(zeroExtend(auroraTestIdx), 7);
 		
@@ -131,12 +134,10 @@ module mkMain#(FlashIndication indication, Clock clk250, Reset rst250)(MainIfc);
 			indication.hexDump(truncate(data));
 	endrule
 
-	
-
    MemreadEngineV#(WordSz,1,1)  re <- mkMemreadEngine;
    MemwriteEngineV#(WordSz,1,1) we <- mkMemwriteEngine;
 
-   PageCacheIfc#(3) pageCache <- mkPageCache; // 8 pages
+   PageCacheIfc#(3, 128) pageCache <- mkPageCache; // 8 pages
 
 	DMAWriteEngineIfc#(WordSz) dmaWriter <- mkDmaWriteEngine(we.writeServers[0], we.dataPipes[0]);
 	rule dmaWriteData;
@@ -167,17 +168,28 @@ module mkMain#(FlashIndication indication, Clock clk250, Reset rst250)(MainIfc);
 	endrule
 
 
-	FIFO#(FlashCmd) flashCmdQ <- mkSizedFIFO(32);
-	rule driveFlashCmd;
-		let cmd = flashCmdQ.first;
+	Reg#(Bit#(32)) curReqsInQ <- mkReg(0);
+	Reg#(Bit#(32)) numReqsRequested <- mkReg(0);
+	rule driveNewReqs(started&& curReqsInQ + numReqsRequested < 64 );
+		numReqsRequested <= numReqsRequested + 64;
+		indication.reqFlashCmd(curReqsInQ, 64);
+	endrule
 
+	FIFO#(FlashCmd) flashCmdQ <- mkSizedFIFO(128);
+	rule driveFlashCmd (started);
+		let cmd = flashCmdQ.first;
+		
 		if ( cmd.cmd == Read ) begin
+			curReqsInQ <= curReqsInQ -1;
+
 			flashCmdQ.deq;
 			dmaWriter.startWrite(cmd.tag, fromInteger(pageWords));
 
 			pageCache.readPage( zeroExtend(cmd.page), cmd.tag);
 			//$display( "starting page read %d at tag %d in buffer %", cmd.page, cmd.tag, freeidx );
 		end else if ( cmd.cmd == Write ) begin
+			curReqsInQ <= curReqsInQ -1;
+
 			flashCmdQ.deq;
 			dmaReader.startRead(cmd.bufidx, fromInteger(pageWords));
 
@@ -203,6 +215,8 @@ module mkMain#(FlashIndication indication, Clock clk250, Reset rst250)(MainIfc);
 			tag: truncate(tag)};
 
 		flashCmdQ.enq(fcmd);
+		curReqsInQ <= curReqsInQ +1;
+		numReqsRequested <= numReqsRequested - 1;
 
 			
 	endmethod
@@ -218,6 +232,8 @@ module mkMain#(FlashIndication indication, Clock clk250, Reset rst250)(MainIfc);
 			tag: ?};
 
 		flashCmdQ.enq(fcmd);
+		curReqsInQ <= curReqsInQ +1;
+		numReqsRequested <= numReqsRequested - 1;
 	endmethod
 	method Action erasePage(Bit#(32) channel, Bit#(32) chip, Bit#(32) block);
 		CmdType cmd = Erase;
@@ -230,6 +246,8 @@ module mkMain#(FlashIndication indication, Clock clk250, Reset rst250)(MainIfc);
 			tag: 0};
 
 		flashCmdQ.enq(fcmd);
+		curReqsInQ <= curReqsInQ +1;
+		numReqsRequested <= numReqsRequested - 1;
 	endmethod
 	method Action sendTest(Bit#(32) data);
 		auroraTestIdx <= data;
@@ -242,6 +260,9 @@ module mkMain#(FlashIndication indication, Clock clk250, Reset rst250)(MainIfc);
 	endmethod
 	method Action returnReadHostBuffer(Bit#(32) idx);
 		dmaWriter.returnFreeBuf(truncate(idx));
+	endmethod
+	method Action start(Bit#(32) dummy);
+		started <= True;
 	endmethod
    endinterface
 
