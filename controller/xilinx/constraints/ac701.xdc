@@ -60,3 +60,7 @@ set_property LOC G5 [get_ports {leds[1]}]
 set_property LOC F4 [get_ports {leds[2]}]
 set_property LOC G4 [get_ports {leds[3]}]
 set_property IOSTANDARD LVCMOS18    [get_ports { leds[*] }]
+
+
+create_clock -name CLK_sys_clk_p -period 10.000 [get_ports CLK_sys_clk_p]
+set_input_jitter CLK_sys_clk_p 0.100

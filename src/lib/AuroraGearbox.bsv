@@ -1,6 +1,7 @@
 import FIFO::*;
 import FIFOF::*;
 import Clocks :: *;
+import BRAMFIFO::*;
 
 typedef 8 HeaderSz;
 typedef TSub#(128,8) BodySz;
@@ -19,27 +20,33 @@ interface AuroraGearboxIfc;
 endinterface
 
 module mkAuroraGearbox#(Clock aclk, Reset arst) (AuroraGearboxIfc);
-	SyncFIFOIfc#(Tuple2#(DataIfc,PacketType)) sendQ <- mkSyncFIFOFromCC(4, aclk);
+	SyncFIFOIfc#(Tuple2#(DataIfc,PacketType)) sendQ <- mkSyncBRAMFIFOFromCC(4, aclk, arst);
 
-	Integer recvQDepth = 32;
-	Integer windowSize = 16;
-	SyncFIFOIfc#(Tuple2#(DataIfc,PacketType)) recvQ <- mkSyncFIFOToCC(4, aclk, arst);
+	Integer recvQDepth = 128;
+	Integer windowSize = 64;
+	SyncFIFOIfc#(Tuple2#(DataIfc,PacketType)) recvQ <- mkSyncBRAMFIFOToCC(4, aclk, arst);
 	FIFO#(Tuple2#(DataIfc,PacketType)) recvBufferQ <- mkSizedFIFO(recvQDepth, clocked_by aclk, reset_by arst);
-	Reg#(Bit#(16)) maxInFlight <- mkReg(0, clocked_by aclk, reset_by arst);
-	Reg#(Bit#(16)) curInQ <- mkReg(0, clocked_by aclk, reset_by arst);
+	Reg#(Bit#(16)) maxInFlightUp <- mkReg(0, clocked_by aclk, reset_by arst);
+	Reg#(Bit#(16)) maxInFlightDown <- mkReg(0, clocked_by aclk, reset_by arst);
+	Reg#(Bit#(16)) curInQUp <- mkReg(0, clocked_by aclk, reset_by arst);
+	Reg#(Bit#(16)) curInQDown <- mkReg(0, clocked_by aclk, reset_by arst);
 	FIFOF#(Bit#(8)) flowControlQ <- mkFIFOF(clocked_by aclk, reset_by arst);
 	rule emitFlowControlPacket
-		(maxInFlight+curInQ+fromInteger(windowSize) < fromInteger(recvQDepth));
+		((maxInFlightUp-maxInFlightDown)
+		+(curInQUp-curInQDown)
+		+fromInteger(windowSize) < fromInteger(recvQDepth));
 
 		flowControlQ.enq(fromInteger(windowSize));
-		maxInFlight <= maxInFlight + fromInteger(windowSize);
+		maxInFlightUp <= maxInFlightUp + fromInteger(windowSize);
 	endrule
 
-	Reg#(Bit#(16)) curSendBudget <- mkReg(0, clocked_by aclk, reset_by arst);
+	Reg#(Bit#(16)) curSendBudgetUp <- mkReg(0, clocked_by aclk, reset_by arst);
+	Reg#(Bit#(16)) curSendBudgetDown <- mkReg(0, clocked_by aclk, reset_by arst);
 
 	FIFO#(Bit#(AuroraWidth)) auroraOutQ <- mkFIFO(clocked_by aclk, reset_by arst);
 	Reg#(Maybe#(Tuple2#(Bit#(BodySz), PacketType))) packetSendBuffer <- mkReg(tagged Invalid, clocked_by aclk, reset_by arst);
 	rule sendPacketPart;
+		let curSendBudget = curSendBudgetUp - curSendBudgetDown;
 		if ( flowControlQ.notEmpty ) begin
 			flowControlQ.deq;
 			PacketType ptype = 0;
@@ -53,6 +60,7 @@ module mkAuroraGearbox#(Clock aclk, Reset arst) (AuroraGearboxIfc);
 					tpl_2(btpl), tpl_1(btpl)
 					});
 				packetSendBuffer <= tagged Invalid;
+				curSendBudgetDown <= curSendBudgetDown + 1;
 			end else begin
 				sendQ.deq;
 				let data = sendQ.first;
@@ -79,7 +87,7 @@ module mkAuroraGearbox#(Clock aclk, Reset arst) (AuroraGearboxIfc);
 		PacketType ptype = truncate(header);
 
 		if ( control == 1 ) begin
-			curSendBudget <= curSendBudget + truncate(cdata);
+			curSendBudgetUp <= curSendBudgetUp + truncate(cdata);
 		end else
 		if ( isValid(packetRecvBuffer) ) begin
 			let pdata = fromMaybe(0, packetRecvBuffer);
@@ -87,8 +95,8 @@ module mkAuroraGearbox#(Clock aclk, Reset arst) (AuroraGearboxIfc);
 				packetRecvBuffer <= tagged Invalid;
 				recvBufferQ.enq( tuple2({cdata, pdata}, ptype) );
 
-				maxInFlight <= maxInFlight - 1;
-				curInQ <= curInQ + 1;
+				maxInFlightDown <= maxInFlightDown + 1;
+				curInQUp <= curInQUp + 1;
 			end
 			else begin
 				packetRecvBuffer <= tagged Valid cdata;
@@ -100,7 +108,7 @@ module mkAuroraGearbox#(Clock aclk, Reset arst) (AuroraGearboxIfc);
 		end
 	endrule
 	rule flushReadBuffer;
-		curInQ <= curInQ - 1;
+		curInQDown <= curInQDown + 1;
 
 		recvBufferQ.deq;
 		recvQ.enq(recvBufferQ.first);

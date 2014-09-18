@@ -333,7 +333,7 @@ int main(int argc, const char **argv)
 	fprintf(stderr, "Main::flush and invalidate complete\n");
 	device->start(0);
   
-	device->sendTest(LARGE_NUMBER*1024);
+	device->sendTest(LARGE_NUMBER*1024, LARGE_NUMBER*1024);
 
 	for ( int i = 0; i < (8192+64)/4; i++ ) {
 		for ( int j = 0; j < BUFFER_COUNT; j++ ) {

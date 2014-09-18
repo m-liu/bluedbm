@@ -536,10 +536,12 @@ vio_7series i_vio
   //-----------------------------------------------------------------
   //  ILA core instance
   //-----------------------------------------------------------------
+/*
 ila_7series i_ila (
   .clk(user_clk_i), // input CLK
   .probe0({0,lane_up_i_i,channel_up_r,soft_err_i, rx_d_i[120:127],rx_d_i[0:15],tx_d_i[0:15], rx_src_rdy_n_i, tx_src_rdy_n_i}) // input [63 : 0] PROBE0
 );
+*/
 
 end //end USE_CHIPSCOPE=1 generate section
 else
