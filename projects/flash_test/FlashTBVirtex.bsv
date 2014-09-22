@@ -542,27 +542,13 @@ module mkFlashTBVirtex(TbIfc);
 		wrState <= 1;
 	endrule
 
-	//wait 2 cycles before another burst
-	Reg#(Bit#(32)) wrDelayCnt <- mkReg(1);
-
-	rule doWriteDataDelay if (wrState == 1);
-		if (wrDelayCnt==0) begin
-			wrState <= 2;
-			wrDelayCnt <= 1;
-		end
-		else begin
-			wrDelayCnt <= wrDelayCnt - 1;
-		end
-	endrule
-
-	rule doWriteDataSend if (wrState ==2);
+	rule doWriteDataSend if (wrState ==1);
 		if (wdataCnt < fromInteger(pageSizeUser/16)) begin
 			Bit#(128) wData = getDataHash(wdataCnt, tagCmd.page, 
 											tagCmd.block, tagCmd.chip, tagCmd.bus);
 			//flashCtrl.user.writeWord(wData, tagCmd.tag);
 			fcQ_writeWord.enq(tuple2(wData, tagCmd.tag));
 			wdataCnt <= wdataCnt + 1;
-			wrState <= 1; //TODO FIXME
 			$display("@%t\t%m: tb sent write data [%d]: %x", $time, wdataCnt, wData);
 		end
 		else begin
