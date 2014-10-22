@@ -5,4 +5,4 @@
 #wjun@umma:~/bluedbm_work/bluedbm/projects/test/vc707$ cd ..
 #(reverse-i-search)`': ^C
 tar czf m.tgz vc707
-scp m.tgz multiplicity.csail.mit.edu:~
+scp m.tgz ml@multiplicity.csail.mit.edu:~

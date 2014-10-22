@@ -13,11 +13,12 @@ import BRAMFIFOVector::*;
 
 typedef 4 NumDmaChannels;
 
-typedef TAdd#(8192,64) PageBytes;
+//typedef TAdd#(8192,64) PageBytes;
+typedef 8192 PageBytes;
 typedef 16 WordBytes;
-typedef 128 WriteBufferCount;
-typedef 64 WriteTagCount;
-typedef 64 ReadBufferCount;
+typedef 64 WriteBufferCount;
+typedef 32 WriteTagCount;
+typedef 32 ReadBufferCount;
 /*
 typedef 64 WriteBufferCount;
 typedef 64 WriteTagCount;
@@ -40,11 +41,11 @@ module mkDmaReadEngine#(
 	
 	Integer pageBytes = valueOf(PageBytes);
 	
-	Integer wordBytes = valueOf(WordBytes); 
+	Integer wordBytes = valueOf(WordBytes);  //16
 	Integer burstBytes = 16*4;
-	Integer burstWords = burstBytes/wordBytes;
+	Integer burstWords = burstBytes/wordBytes; //4
 	
-	Integer pageWords = pageBytes/wordBytes;
+	Integer pageWords = pageBytes/wordBytes; //
 	
 	Vector#(ReadBufferCount, Reg#(Tuple2#(Bit#(32),Bit#(32)))) dmaReadRefs <- replicateM(mkReg(?));
 	
@@ -128,6 +129,22 @@ endmodule
 	
 
 
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 interface FreeBufferClientIfc;
 		method ActionValue#(Tuple2#(Bit#(8),Bit#(8))) done;
 		method ActionValue#(Bit#(8)) getDmaRefReq;
@@ -137,6 +154,11 @@ endinterface
 interface DMAWriteEngineIfc#(numeric type wordSz);
 	method Action write(Bit#(wordSz) word, Bit#(8) tag); 
 	method Action startWrite(Bit#(8) tag, Bit#(8) freeidx, Bit#(32) wordCount);
+	method Bit#(32) getDebugWrRef();
+	method Bit#(32) getDebugBurstOff();
+	method Bit#(wordSz) getDebugDmaData();
+	method Bit#(8) getDebugWrDoneRbuf();
+	method Bit#(8) getDebugWrTag();
 	interface FreeBufferClientIfc bufClient;
 endinterface
 module mkDmaWriteEngine# (
@@ -148,9 +170,17 @@ module mkDmaWriteEngine# (
 	Integer tagCount = valueOf(WriteTagCount);
 	Integer wordBytes = valueOf(WordBytes); 
 	Integer burstBytes = 16*4;
-	Integer burstWords = burstBytes/wordBytes;
+	Integer burstWords = burstBytes/wordBytes; //4444
 	
 	Integer pageBytes = valueOf(PageBytes);
+
+	Reg#(Bit#(32)) debugWrRef <- mkReg(0);
+	Reg#(Bit#(32)) debugBurstOff <- mkReg(0);
+	Reg#(Bit#(wordSz)) debugDmaData <- mkReg(0);
+	Reg#(Bit#(8)) debugWriteDoneRbuf <- mkReg(0);
+	Reg#(Bit#(8)) debugWriteDoneTag <- mkReg(0);
+
+
 
 	BRAMFIFOVectorIfc#(WriteTagCountLog, 12, Bit#(wordSz)) writeBuffer <- mkBRAMFIFOVector(4);
 	Vector#(WriteTagCount, Reg#(Tuple2#(Bit#(32), Bit#(4)))) dmaWriteOffset <- replicateM(mkReg(tuple2(0,0))); // tag -> curoffset, writePhaseIdx
@@ -180,6 +210,7 @@ module mkDmaWriteEngine# (
 			startDmaFlushQ.enq(zeroExtend(tag));
 			let rbuf = dmaWriteBuf[tag];
 			dmaRefReqQ.enq(rbuf);
+			$display("%m DMAWriter: startFlushDma dmaRefReqQ enq rbuf = %d, rcount=%d", rbuf, rcount);
 		end
 	endrule
 	FIFO#(MemengineCmd) engineCmdQ <- mkSizedFIFO(4);
@@ -191,6 +222,7 @@ module mkDmaWriteEngine# (
 		let offset = tpl_1(doff);
 		let phase = tpl_2(doff);
 		let nphase = dmaWriteOffsetNew[tag];
+		$display("%m DMAWriter: dma tag=%d, phase=%d, nphase=%d", tag, phase, nphase);
 		if ( phase != nphase ) begin
 			offset = 0;
 			phase = nphase;
@@ -205,15 +237,26 @@ module mkDmaWriteEngine# (
 		let wrRef = tpl_1(wr);
 		let wrOff = tpl_2(wr);
 		let burstOff = wrOff + offset;
+
+		$display("%m DMAWriter: dma flush offset=%d", offset);
 	  
 		if ( offset < fromInteger(pageBytes) ) begin
 			//$display( "%d: starting burst %d", rbuf, offset );
 			wServer.request.put(MemengineCmd{pointer:wrRef, base:zeroExtend(burstOff), len:fromInteger(burstBytes), burstLen:fromInteger(burstBytes)});
+			
+			debugWrRef <= wrRef;
+			debugBurstOff <= burstOff;
 
 			dmaWriteLocQ.enq(tuple2(rbuf, tag));
+			$display("%m DMAWriter: startFlushDma2 enqueued rbuf = %d", rbuf);
 			dmaBurstOffsetQ.enq(offset);
 			startWriteTagQ.enq(tag);
 		end
+		/*
+		else begin
+			$display("WTF???");
+		end
+		*/
 		//engineCmdQ.enq(MemengineCmd{pointer:wrRef, base:zeroExtend(burstOff), len:fromInteger(burstBytes), burstLen:fromInteger(burstBytes)});
 	endrule
 	/*
@@ -238,7 +281,7 @@ module mkDmaWriteEngine# (
 		//$display( "%d: requesting burst data  %d %d", rbuf, burstCount, writeCount );
 	endrule
 
-	FIFO#(Bit#(32)) writeCountQ <- mkFIFO;
+	FIFO#(Bit#(32)) writeCountQ <- mkSizedFIFO(4); //ML
 	FIFO#(Tuple2#(Bit#(8), Bit#(8))) writeDoneQ <- mkFIFO;
 
 	rule flushDma2;
@@ -246,6 +289,8 @@ module mkDmaWriteEngine# (
 		curWriteTagQ.deq;
 
 		let d <- writeBuffer.respDeq;
+
+		debugDmaData <= d;
 
 		wPipe.enq(d);
 
@@ -261,14 +306,18 @@ module mkDmaWriteEngine# (
 		let bd = dmaWriteLocQ.first;
 		let rbuf = tpl_1(bd);
 		let tag = tpl_2(bd);
+
 		
 
 		let wReqBytes = writeCountQ.first * fromInteger(wordBytes);
 		let nextOff = dmaOff + fromInteger(burstBytes);
 
 		if ( nextOff >= wReqBytes ) begin
+			$display("DMAWriter: write_finish enqueued rbuf = %d tag=%d", rbuf, tag);
 			writeDoneQ.enq(tuple2(rbuf, tag));
 			writeCountQ.deq;
+			debugWriteDoneRbuf <= rbuf;
+			debugWriteDoneTag <= tag;
 		end
 	endrule
 
@@ -279,9 +328,29 @@ module mkDmaWriteEngine# (
 		//dmaWriteStatus[freeidx] <= tuple2(tag, 0);
 		dmaWriteBuf[tag] <= freeidx;
 		dmaWriteOffsetNew[tag] <= dmaWriteOffsetNew[tag] + 1;
+		$display("%m DMAWriter: dmaWriteOffsetNew[%d] =%d", tag, dmaWriteOffsetNew[tag] + 1);
 		
 		writeCountQ.enq(wordCount);
 	endmethod
+
+
+	method Bit#(32) getDebugWrRef();
+		return debugWrRef;
+	endmethod
+	method Bit#(32) getDebugBurstOff();
+		return debugBurstOff;
+	endmethod
+	method Bit#(wordSz) getDebugDmaData();
+		return debugDmaData;
+	endmethod
+	method Bit#(8) getDebugWrDoneRbuf();
+		return debugWriteDoneRbuf;
+	endmethod
+	method Bit#(8) getDebugWrTag();
+		return debugWriteDoneTag;
+	endmethod
+	
+
 
 	interface FreeBufferClientIfc bufClient;
 		method ActionValue#(Tuple2#(Bit#(8),Bit#(8))) done;

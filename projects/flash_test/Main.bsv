@@ -43,20 +43,21 @@ import DMABurstHelper::*;
 import ChipscopeWrapper::*;
 import ControllerTypes::*;
 import FlashCtrlVirtex::*;
-import FlashTBVirtex::*;
+import FlashEmu::*;
+//import FlashTBVirtex::*;
 
 
-typedef TAdd#(8192,64) PageBytes;
+//typedef TAdd#(8192,64) PageBytes;
 //typedef 16 WordBytes;
-typedef 16 WordBytes;
-typedef TMul#(8,WordBytes) WordSz;
+//typedef 16 WordBytes;
+//typedef TMul#(8,WordBytes) WordSz;
 
 interface FlashRequest;
 	method Action readPage(Bit#(32) channel, Bit#(32) chip, Bit#(32) block, Bit#(32) page, Bit#(32) tag);
 	method Action returnReadHostBuffer(Bit#(32) idx);
 	method Action writePage(Bit#(32) channel, Bit#(32) chip, Bit#(32) block, Bit#(32) page, Bit#(32) tag);
 	method Action erasePage(Bit#(32) channel, Bit#(32) chip, Bit#(32) block);
-	method Action sendTest(Bit#(32) dataHi, Bit#(32) dataLo);
+	method Action sendTest(Bit#(32) data);
 	method Action addWriteHostBuffer(Bit#(32) pointer, Bit#(32) offset, Bit#(32) idx);
 	method Action addReadHostBuffer(Bit#(32) pointer, Bit#(32) offset, Bit#(32) idx);
 
@@ -86,44 +87,47 @@ module mkMain#(FlashIndication indication, Clock clk250, Reset rst250)(MainIfc);
 	
 	//Integer pageBytes = valueOf(PageBytes);
 	//Integer wordBytes = valueOf(WordBytes); 
-	//Integer pageWords = pageBytes/wordBytes;
+	//Integer pageWords = pageSizeUser/wordBytes;
+
+	Integer numDmaChannels = valueOf(NumDmaChannels);
 
 	Reg#(Bool) started <- mkReg(False);
 	Reg#(Bit#(64)) testIn <- mkReg(0);
 
+	Reg#(Bit#(16)) debugCmdTag <- mkReg(0);
+	Reg#(Bit#(16)) debugCmdBus <- mkReg(0);
+	Reg#(Bit#(16)) debugCmdChip <- mkReg(0);
+	Reg#(Bit#(16)) debugCmdBlk <- mkReg(0);
+	Reg#(Bit#(16)) debugCmdPage <- mkReg(0);
+	Reg#(Bit#(16)) debugFreeBuf <- mkReg(0);
+	Reg#(Bit#(16)) debugDmaWrInd <- mkReg(0);
+	Reg#(Bit#(64)) debugRCnt <- mkReg(0);
+	Reg#(Tuple2#(Bit#(128), TagT)) debugRd <- mkRegU();
+	Reg#(Bit#(64)) cmdCnt <- mkReg(0);
+
 	GtxClockImportIfc gtx_clk_fmc1 <- mkGtxClockImport;
-	FlashCtrlVirtexIfc flashCtrl <- mkFlashCtrlVirtex(gtx_clk_fmc1.gtx_clk_p_ifc, gtx_clk_fmc1.gtx_clk_n_ifc, clk250);
-	TbIfc flashTb <- mkFlashTBVirtex();
-	CSDebugIfc csDebug <- mkChipscopeDebug();
+	`ifdef BSIM
+		FlashCtrlVirtexIfc flashCtrl <- mkFlashEmu();
+	`else
+		FlashCtrlVirtexIfc flashCtrl <- mkFlashCtrlVirtex(gtx_clk_fmc1.gtx_clk_p_ifc, gtx_clk_fmc1.gtx_clk_n_ifc, clk250);
+	`endif
+
+	//TbIfc flashTb <- mkFlashTBVirtex();
+	`ifndef BSIM
+		CSDebugIfc csDebug <- mkChipscopeDebug();
+	`endif
 
 	//connect tb to flashCtrl
-	mkConnection(flashCtrl.user.sendCmd, flashTb.driver.sendCmdTb);
-	mkConnection(flashCtrl.user.writeWord, flashTb.driver.writeWordTb);
-	mkConnection(flashCtrl.user.readWord, flashTb.driver.readWordTb);
-	mkConnection(flashCtrl.user.writeDataReq, flashTb.driver.writeDataReqTb);
-	mkConnection(flashCtrl.user.ackStatus, flashTb.driver.ackStatusTb);
+	//mkConnection(flashCtrl.user.sendCmd, flashTb.driver.sendCmdTb);
+	//mkConnection(flashCtrl.user.writeWord, flashTb.driver.writeWordTb);
+	//mkConnection(flashCtrl.user.readWord, flashTb.driver.readWordTb);
+	//mkConnection(flashCtrl.user.writeDataReq, flashTb.driver.writeDataReqTb);
+	//mkConnection(flashCtrl.user.ackStatus, flashTb.driver.ackStatusTb);
 
-	
-	rule setDebug;
-		DataIfc recPacketData = tpl_1(flashCtrl.debug.debugRecPacket);
-		Bit#(128) recPacketLo = recPacketData[127:0];
-		Bit#(128) recPacketHi = zeroExtend(recPacketData[239:128]);
-
-		csDebug.ila.setDebug0(flashTb.debug.debugRdata);
-		csDebug.ila.setDebug1(zeroExtend(tpl_1(flashTb.debug.debugTagRdCnt))); //tag
-		csDebug.ila.setDebug2(zeroExtend(tpl_2(flashTb.debug.debugTagRdCnt))); //rdata cnt
-		csDebug.ila.setDebug3(zeroExtend(flashTb.debug.debugCmdCnt));
-		csDebug.ila.setDebug4(zeroExtend(flashTb.debug.debugErrCnt));
-		csDebug.ila.setDebug5(zeroExtend(flashTb.debug.debugState));
-		csDebug.ila.setDebug6(zeroExtend(flashTb.debug.debugLatencyCnt));
-		csDebug.ila.setDebug7(zeroExtend(pack(tpl_2(flashCtrl.debug.debugRecPacket)))); //packet type
-		csDebug.ila.setDebug8(recPacketHi);
-		csDebug.ila.setDebug9(recPacketLo);
-		csDebug.ila.setDebug10(0);
-	endrule
 
 
 	//echo VIN/VOUT
+	/*
 	rule echoVin;
 		if (started) begin
 			csDebug.vio.setDebugVin(testIn);
@@ -133,7 +137,6 @@ module mkMain#(FlashIndication indication, Clock clk250, Reset rst250)(MainIfc);
 		end
 	endrule
 	
-
 	rule setVin;
 		//flashTb.debug.debugVin(testIn);
 		if (started) begin
@@ -143,97 +146,211 @@ module mkMain#(FlashIndication indication, Clock clk250, Reset rst250)(MainIfc);
 			flashTb.debug.debugVin(csDebug.vio.getDebugVout);
 		end
 	endrule
+	*/
 
-   MemreadEngineV#(WordSz,1,1)  re <- mkMemreadEngine;
-   MemwriteEngineV#(WordSz,1,1) we <- mkMemwriteEngine;
+	//distribute read data to the dma writers
+	//Tag to Dma Writer Index look up table
+	Vector#(NumTags, Reg#(Bit#(TLog#(NumDmaChannels)))) tag2DmaIndTable <- replicateM(mkRegU());
+	Vector#(NumDmaChannels, FIFO#(Tuple2#(Bit#(WordSz), TagT))) dmaWriterBufs <- replicateM(mkSizedFIFO(16)); //TODO what's a good size here? BRAM FIFO? Maybe make it page sized and pipeline the next rule
+	FIFO#(Bit#(TLog#(NumDmaChannels))) distrIndPipeQ <- mkFIFO();
+	FIFO#(Tuple2#(Bit#(128), TagT)) distrDataPipeQ <- mkFIFO();
 
-   //PageCacheIfc#(3, 128) pageCache <- mkPageCache; // 8 pages
-
-	DMAWriteEngineIfc#(WordSz) dmaWriter <- mkDmaWriteEngine(we.writeServers[0], we.dataPipes[0]);
-	/*
-	rule dmaWriteData;
-		let r <- pageCache.readWord;
-		let d = tpl_1(r);
-		let t = tpl_2(r);
-		//$display ( "reading %d %d", d[31:0], t );
-		dmaWriter.write(d,t);
+	rule distrToDMAWriter;
+		let rd <- flashCtrl.user.readWord();
+		let data = tpl_1(rd);
+		let tag = tpl_2(rd);
+		let ind = tag2DmaIndTable[tag];
+		distrIndPipeQ.enq(ind);
+		distrDataPipeQ.enq(rd);
+		$display("main.bsv: read rd = %x, tag = %d, dmaInd=%d", data, tag, ind);
 	endrule
-	rule dmaWriteDone;
-		let r <- dmaWriter.done;
+
+	rule distrToDMAWriter2;
+		let ind = distrIndPipeQ.first;
+		distrIndPipeQ.deq;
+		let rd = distrDataPipeQ.first;
+		distrDataPipeQ.deq;
+		dmaWriterBufs[ind].enq(rd);
+		debugRd <= rd;
+		debugRCnt <= debugRCnt + 1;
+	endrule
+
+
+
+	/////////////// DMA Writer with flash controller //////////////////////////////////////
+	MemwriteEngineV#(WordSz,1,NumDmaChannels) we <- mkMemwriteEngine;
+	Vector#(NumDmaChannels, FreeBufferClientIfc) dmaWriterFreeBufferClient;
+	Vector#(NumDmaChannels, DMAWriteEngineIfc#(WordSz)) dmaWriters;
+	for ( Integer wIdx = 0; wIdx < numDmaChannels; wIdx = wIdx + 1 ) begin
+		//let pageCache = pageCaches[wIdx];
+		let dmaWrBuf = dmaWriterBufs[wIdx];
+
+		DMAWriteEngineIfc#(WordSz) dmaWriter <- mkDmaWriteEngine(we.writeServers[wIdx], we.dataPipes[wIdx]);
+		dmaWriters[wIdx] = dmaWriter;
+		rule dmaWriteData;
+			//let r <- pageCache.readWord;
+			let r = dmaWrBuf.first;
+			dmaWrBuf.deq();
+			let d = tpl_1(r);
+			let t = tpl_2(r);
+			//$display ( "reading %d %d @ %d", d[31:0], t, wIdx );
+			dmaWriter.write(d,zeroExtend(t));
+		endrule
+
+		dmaWriterFreeBufferClient[wIdx] = dmaWriter.bufClient;
+	end
+	FreeBufferManagerIfc writeBufMan <- mkFreeBufferManager(dmaWriterFreeBufferClient);
+	rule dmaWriteDoneCheck;
+		let r <- writeBufMan.done;
 		let rbuf = tpl_1(r);
 		let tag = tpl_2(r);
 		indication.readDone(zeroExtend(rbuf), zeroExtend(tag));
+		
 	endrule
-	*/
 
-	DMAReadEngineIfc#(WordSz) dmaReader <- mkDmaReadEngine(re.readServers[0], re.dataPipes[0]);
+	//TODO: DMA reader 
+
+	Vector#(NumDmaChannels, DMAReadEngineIfc#(WordSz)) dmaReaders;
+	MemreadEngineV#(WordSz,1,NumDmaChannels)  re <- mkMemreadEngine;
 	/*
-	rule dmaReadDone;
-		let bufidx <- dmaReader.done;
-		indication.writeDone(zeroExtend(bufidx));
-	endrule
-	rule dmaReadData;
-		let r <- dmaReader.read;
-		let d = tpl_1(r);
-		let t = tpl_2(r);
-		pageCache.writeWord(d,t);
-		//$display( "writing %d %d", d[31:0], t );
-	endrule
+	for ( Integer rIdx = 0; rIdx < numDmaChannels; rIdx = rIdx + 1 ) begin
+		let pageCache = pageCaches[rIdx];
+
+		DMAReadEngineIfc#(WordSz) dmaReader <- mkDmaReadEngine(re.readServers[rIdx], re.dataPipes[rIdx]);
+		dmaReaders[rIdx] = dmaReader;
+
+		rule dmaReadDone;
+			let bufidx <- dmaReader.done;
+			indication.writeDone(zeroExtend(bufidx));
+		endrule
+		rule dmaReadData;
+			let r <- dmaReader.read;
+			let d = tpl_1(r);
+			let t = tpl_2(r);
+			pageCache.writeWord(d,t);
+			//$display( "writing %d %d", d[31:0], t );
+		endrule
+	end // for loop
 	*/
 
-	
 	Reg#(Bit#(32)) curReqsInQ <- mkReg(0);
 	Reg#(Bit#(32)) numReqsRequested <- mkReg(0);
-	/*
-	rule driveNewReqs(started&& curReqsInQ + numReqsRequested < 64 );
-		numReqsRequested <= numReqsRequested + 64;
-		indication.reqFlashCmd(curReqsInQ, 64);
+	rule driveNewReqs(started&& curReqsInQ + numReqsRequested < fromInteger(valueOf(NumTags))-32 );
+		numReqsRequested <= numReqsRequested + 32;
+		indication.reqFlashCmd(curReqsInQ, 32);
+		$display( "Requesting more flash commands" );
 	endrule
 
-	FIFO#(FlashCmd) flashCmdQ <- mkSizedFIFO(128);
+
+	FIFO#(FlashCmd) flashCmdQ <- mkSizedFIFO(valueOf(NumTags));
 	rule driveFlashCmd (started);
 		let cmd = flashCmdQ.first;
+		flashCmdQ.deq;
+
+		//debug
+		debugCmdTag <= zeroExtend(cmd.tag);
+		debugCmdBus <= zeroExtend(cmd.bus);
+		debugCmdChip <=zeroExtend(cmd.chip);
+		debugCmdBlk <= zeroExtend(cmd.block);
+		debugCmdPage <=zeroExtend(cmd.page);
+		cmdCnt <= cmdCnt + 1;
 		
-		if ( cmd.cmd == Read ) begin
+		if ( cmd.op == READ_PAGE ) begin
+			curReqsInQ <= curReqsInQ -1;
+			let freebuf <- writeBufMan.getFreeBufIdx;
+			debugFreeBuf <= zeroExtend(freebuf);
+			// temporary stuff
+		
+			Bit#(TLog#(NumDmaChannels)) dmaInd = truncate(cmd.bus);
+			let dmaWriter = dmaWriters[dmaInd];
+			//let pageCache = pageCaches[cmd.bus];
+
+			//FIXME: tag width
+			$display( "starting page read %d at tag %d in buffer %d, bus/dmawriterInd=%d", cmd.page, cmd.tag, freebuf, dmaInd);
+			dmaWriter.startWrite(zeroExtend(cmd.tag), freebuf, fromInteger(pageWords));
+
+			//pageCache.readPage( zeroExtend(cmd.page), cmd.tag);
+		end else if ( cmd.op == WRITE_PAGE ) begin
+			/*
 			curReqsInQ <= curReqsInQ -1;
 
-			flashCmdQ.deq;
-			dmaWriter.startWrite(cmd.tag, fromInteger(pageWords));
+			let dmaReader = dmaReaders[cmd.channel];
+			let pageCache = pageCaches[cmd.channel];
 
-			pageCache.readPage( zeroExtend(cmd.page), cmd.tag);
-			//$display( "starting page read %d at tag %d in buffer %", cmd.page, cmd.tag, freeidx );
-		end else if ( cmd.cmd == Write ) begin
-			curReqsInQ <= curReqsInQ -1;
-
-			flashCmdQ.deq;
 			dmaReader.startRead(cmd.bufidx, fromInteger(pageWords));
 
 			pageCache.writePage(zeroExtend(cmd.page), cmd.bufidx);
-			//$display( "starting page write page %d at tag %d", cmd.page, cmd.tag );
+			$display( "starting page write page %d at tag %d", cmd.page, cmd.tag );
+			*/
 		end
+		
+		//store tag and dmaWrInd in look up table
+		Bit#(TLog#(NumDmaChannels)) dmaWrInd = truncate(cmd.bus);
+		tag2DmaIndTable[cmd.tag] <= dmaWrInd;
+
+		debugDmaWrInd <= zeroExtend(dmaWrInd);
+
+		//forward command to flash controller
+		flashCtrl.user.sendCmd(cmd);
+
 	endrule
 
-	//(* mutually_exclusive = "startFlushDma, driveFlashCmd" *)
-   */
+
+	`ifndef BSIM
+	rule setDebug;
+		DataIfc recPacketData = tpl_1(flashCtrl.debug.debugRecPacket);
+		Bit#(128) recPacketLo = recPacketData[127:0];
+		Bit#(128) recPacketHi = zeroExtend(recPacketData[239:128]);
+
+		/*
+		csDebug.ila.setDebug0(flashTb.debug.debugRdata);
+		csDebug.ila.setDebug1(zeroExtend(tpl_1(flashTb.debug.debugTagRdCnt))); //tag
+		csDebug.ila.setDebug2(zeroExtend(tpl_2(flashTb.debug.debugTagRdCnt))); //rdata cnt
+		csDebug.ila.setDebug3(zeroExtend(flashTb.debug.debugCmdCnt));
+		csDebug.ila.setDebug4(zeroExtend(flashTb.debug.debugErrCnt));
+		csDebug.ila.setDebug5(zeroExtend(flashTb.debug.debugState));
+		csDebug.ila.setDebug6(zeroExtend(flashTb.debug.debugLatencyCnt));
+		*/
+	   
+		csDebug.ila.setDebug0(tpl_1(debugRd)); //data
+		csDebug.ila.setDebug1(zeroExtend(tpl_2(debugRd))); //tag
+		csDebug.ila.setDebug2(zeroExtend(cmdCnt)); //cmdCnt
+		csDebug.ila.setDebug3(zeroExtend({debugCmdTag, debugCmdBus, debugCmdChip, debugCmdBlk, debugCmdPage})); //addr
+		csDebug.ila.setDebug4(zeroExtend({debugFreeBuf, debugDmaWrInd})); //dma related
+
+		csDebug.ila.setDebug5(zeroExtend({dmaWriters[0].getDebugWrRef, dmaWriters[0].getDebugBurstOff})); //dma addr
+		csDebug.ila.setDebug6(dmaWriters[0].getDebugDmaData); //dma data bursts
+		csDebug.ila.setDebug7(zeroExtend({dmaWriters[0].getDebugWrDoneRbuf, dmaWriters[0].getDebugWrTag})); //dma done signals
+		//csDebug.ila.setDebug8(zeroExtend(pack(tpl_2(flashCtrl.debug.debugRecPacket)))); //packet type
+		csDebug.ila.setDebug8(zeroExtend(debugRCnt)); //global read burst cnt
+		csDebug.ila.setDebug9(recPacketHi);
+		csDebug.ila.setDebug10(recPacketLo);
+	endrule
+	
+
+	`endif
+
+
 
    interface FlashRequest request;
 	method Action readPage(Bit#(32) channel, Bit#(32) chip, Bit#(32) block, Bit#(32) page, Bit#(32) tag);
-		/*
-		CmdType cmd = Read;
+		
+		//CmdType cmd = Read;
 		FlashCmd fcmd = FlashCmd{
-			channel: truncate(channel),
+			tag: truncate(tag),
+			op: READ_PAGE,
+			bus: truncate(channel),
 			chip: truncate(chip),
 			block: truncate(block),
-			page: truncate(page),
-			cmd: cmd,
-			bufidx: ?,
-			tag: truncate(tag)};
+			page: truncate(page)
+
+
+			//bufidx: ?, TODO what does this do?
+			};
 
 		flashCmdQ.enq(fcmd);
 		curReqsInQ <= curReqsInQ +1;
 		numReqsRequested <= numReqsRequested - 1;
-		*/
-			
 	endmethod
    method Action writePage(Bit#(32) channel, Bit#(32) chip, Bit#(32) block, Bit#(32) page, Bit#(32) bufidx);
 		/*
@@ -251,6 +368,7 @@ module mkMain#(FlashIndication indication, Clock clk250, Reset rst250)(MainIfc);
 		curReqsInQ <= curReqsInQ +1;
 		numReqsRequested <= numReqsRequested - 1;
 		*/
+		
 	endmethod
 	method Action erasePage(Bit#(32) channel, Bit#(32) chip, Bit#(32) block);
 		/*
@@ -268,17 +386,21 @@ module mkMain#(FlashIndication indication, Clock clk250, Reset rst250)(MainIfc);
 		numReqsRequested <= numReqsRequested - 1;
 		*/
 	endmethod
-	method Action sendTest(Bit#(32) dataHi, Bit#(32) dataLo);
-		testIn <= {dataHi, dataLo};
+	method Action sendTest(Bit#(32) data);
+		testIn <= zeroExtend(data);
 	endmethod
 	method Action addWriteHostBuffer(Bit#(32) pointer, Bit#(32) offset, Bit#(32) idx);
-		dmaReader.addBuffer(truncate(idx), offset, pointer);
+		/*
+		for (Integer i = 0; i < numDmaChannels; i = i + 1) begin
+			dmaReaders[i].addBuffer(truncate(idx), offset, pointer);
+		end
+		*/
 	endmethod
 	method Action addReadHostBuffer(Bit#(32) pointer, Bit#(32) offset, Bit#(32) idx);
-		dmaWriter.addBuffer(offset, pointer);
+		writeBufMan.addBuffer(offset, pointer);
 	endmethod
 	method Action returnReadHostBuffer(Bit#(32) idx);
-		dmaWriter.returnFreeBuf(truncate(idx));
+		writeBufMan.returnFreeBuf(truncate(idx));
 	endmethod
 	method Action start(Bit#(32) dummy);
 		started <= True;
